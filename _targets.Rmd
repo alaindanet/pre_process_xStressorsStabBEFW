@@ -57,24 +57,22 @@ Our first target borrows the `airquality` dataset built into base R.
 ```{targets raw_sim}
 list(
   tar_target(sim_dir, "/mnt/parscratch/users/bi1ahd/sim/simCSh/"),
-  tar_target(var_param_sim, c("fw_id", "productivity", "S", "ct", "rho", "env_stoch", "Z", "h")),
+  tar_target(var_param_sim, c("fw_id", "productivity", "rho", "env_stoch", "Z", "h")),
   tar_target(sim_files_out2, list.files(sim_dir)),
-  tar_target(sim_files_no_ts, sim_files_out2[!str_detect(sim_files_out2, "_ts")]),
+  tar_target(sim_files_no_ts, list.files(paste0(sim_dir, "without_cvsp/"))),
   tar_target(sim_files_ts,
     list.files(sim_dir) %>% #
       .[str_detect(., "_ts")]
+
     ),
   tar_target(sim_param,
-    map_dfr(sim_files_no_ts,
-      function (x) {
-        open_dataset(paste0(sim_dir, x),
-          format = "arrow") %>%
-        collect() %>%
-        dplyr::select(all_of(var_param_sim))
-      })
+    open_dataset("~/xStressorsStabBEFW/scripts/param_comb_ct_S_h.arrow",
+      format = "arrow") %>%
+    collect() %>%
+    rename(productivity = K, env_stoch = sigma)
     ),
   tar_target(sim_prep,
-        open_dataset(paste0(sim_dir, sim_files_no_ts),
+        open_dataset(paste0(sim_dir, "without_cvsp/", sim_files_no_ts),
           format = "arrow") %>%
         collect() %>%
         # Transform back interaction strength into matrices
@@ -137,6 +135,25 @@ list(
         select(is_null),
         pattern = sim_files_ts
         ),
+  tar_target(sim_ts_mat,
+    open_dataset(paste0(sim_dir, sim_files_ts), format = "arrow") %>%
+        collect() %>%
+        # Transform back interaction strength into matrices
+        mutate(across(where(is.list), as.list)) %>%
+        filter(!map_lgl(species, is.null)) %>%
+        mutate(
+          species = map(species, ~matrix(.x, nrow = 100)),
+          stoch = map(stoch, ~matrix(.x, nrow = 100))
+          ),
+    pattern = sim_files_ts
+  ),
+  tar_target(sim_ts_mat_param,
+    cbind(
+      sim_param[!sim_ts2_null$is_null,] %>% select(-A),
+      sim_ts_mat
+      ) %>%
+    as_tibble()
+  ),
   tar_target(sim_ts2,
     open_dataset(paste0(sim_dir, sim_files_ts),
           format = "arrow") %>%
@@ -170,7 +187,7 @@ list(
         pattern = sim_files_ts
   ),
   tar_target(sim_stab, cbind(sim_param[!sim_ts2_null$is_null,], sim_ts2) %>% as_tibble()),
-  tar_target(sim, left_join(sim_net %>% select(-async, -stab_com), sim_stab, by = var_param_sim)),
+  tar_target(sim, left_join(sim_net %>% select(-async, -stab_com), sim_stab, by = c(var_param_sim, "S"))),
   tar_target(sim_fw,
     sim %>%
       filter(
@@ -178,7 +195,8 @@ list(
         sum_sd_sp != Inf,
         bm_total > 10^-5,
         !disconnected_prod
-        )
+        ) %>%
+    select(!where(is.list))
    ),
    tar_target(sim_fw_df, as.data.frame(sim_fw))
   )
@@ -216,7 +234,12 @@ sim_stab %>%
 ```
 
 ```{r}
-tar_make()
+ncpu <- future::availableCores()
+if (ncpu > 1) {
+  tar_make_future(workers = min(future::availableCores() - 1, 24))
+} else {
+  tar_make()
+}
 ```
 
 The `targets` dependency graph helps your readers understand the steps of your pipeline at a high level.
@@ -226,3 +249,84 @@ tar_visnetwork()
 ```
 
 At this point, you can go back and run `{targets}` chunks in interactive mode without interfering with the code or data of the non-interactive pipeline.
+
+# Output
+
+```{r load-fun}
+sapply(c("tidyverse", "magrittr", "cowplot", "here", "arrow", "piecewiseSEM", "semEff", "easystats", "glmmTMB", "ggcorrplot", "kableExtra"), require, character.only = TRUE)  
+dir_fun <- "~/xStressorsStabBEFW/"
+source(paste0(dir_fun, "R/network_metrics.R"))
+source(paste0(dir_fun, "R/string_replacements.R"))
+source(paste0(dir_fun, "R/stability_decomposition.R"))
+source(paste0(dir_fun, "R/model_helpers.R"))
+```
+
+
+```{r}
+tar_load(sim_prep)
+length(sim_prep$tlvl[[1]])
+sim_prep$alive_species[[1]]
+tar_load(sim_ts_mat_param)
+```
+
+```{r}
+tar_load(var_param_sim)
+#tar_load(sim_ts_mat_param)
+sim_ts_mat_param <- readRDS(here::here("_targets", "objects", "sim_ts_mat_param"))
+object.size(sim_ts_mat_param) * 10^-9
+tar_load(sim_prep)
+object.size(sim_prep) * 10^-9
+ti <- sim_prep %>% 
+  select(all_of(c(var_param_sim, "alive_species", "tlvl"))) %>%
+  left_join(sim_ts_mat_param) %>%
+  mutate(
+    species = map2(species, alive_species, ~.x[, .y]),
+    species = map2(species, tlvl, ~.x[, .y > 1]),
+    stoch = map2(stoch, alive_species, ~.x[, .y]),
+    stoch = map2(stoch, tlvl, ~.x[, .y > 1]),
+    stoch_d = map2(species, stoch, function(bm, d_stoch) {
+      .1 * bm * exp(d_stoch)
+      }),
+    cpe = map_dbl(species, compensatory_effect),
+    cpe_env = map_dbl(stoch_d, compensatory_effect),
+    cpe_int = cpe / cpe_env,
+    stab_com = map_dbl(species, community_stability),
+    pop_stab = map_dbl(species, population_stability),
+    bm_sp = map(species, ~colMeans(.x)),
+    bm_total = map_dbl(bm_sp, ~sum(.x)),
+    sd_sp = map(species, ~apply(.x, 2, sd)),
+    sum_sd_sp = map_dbl(sd_sp, ~sum(.x)),
+    async = map_dbl(species, asynchrony),
+    sae = map(species, statistical_averaging_effect),
+    sae_total = map_dbl(sae, ~.x["total"]),
+    sae_even = map_dbl(sae, ~.x["even"]),
+    evenness_sae = map_dbl(sae, ~.x["eveness"])
+    ) %>%
+  select(-sae, -stoch_d)
+object.size(ti) * 10^-9
+tail(ti$species[[1]])
+tail(ti$tlvl[[1]])
+
+tar_load(c(sim_dir, sim_files_ts))
+tu <- sim_prep[1:4000,] 
+ti <- open_dataset(paste0(sim_dir, sim_files_ts[1]), format = "arrow") %>%
+        collect() %>%
+        # Transform back interaction strength into matrices
+        mutate(across(where(is.list), as.list)) %>%
+        filter(!map_lgl(species, is.null)) %>%
+        mutate(
+          stoch_d = map2(species, stoch, function(bm, d_stoch) {
+            .1 * bm * exp(d_stoch)
+            }),
+          species = map(species, ~matrix(.x, nrow = 100)),
+          stoch = map(stoch, ~matrix(.x, nrow = 100)),
+          stoch_d = map(stoch_d, ~matrix(.x, nrow = 100))
+          )
+```
+
+```{r}
+as.vector(ti$species[[1]])
+```
+
+
+

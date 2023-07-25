@@ -15,10 +15,18 @@ files = all_files[.!mask_ts_files]
 
 println("files: $(files)")
 
+new_dir = joinpath(joinpath(dir, "without_cvsp"))
+
+if !isdir(new_dir)
+    mkdir(new_dir)
+end
+
 for i in files[isfile.([joinpath([dir, i]) for i in files])]
     println("$i")
     df = DataFrame(Arrow.Table(joinpath([dir, i])))
     select!(df, Not([:cv_sp]))
     println("$(names(df))")
-    #Arrow.write(joinpath([dir, i]), df, ntasks = 2)
+    #Arrow.write(joinpath([new_dir, i]), df)
+    println("$(joinpath([new_dir, i]))")
+
 end
