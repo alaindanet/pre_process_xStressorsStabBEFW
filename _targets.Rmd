@@ -328,33 +328,28 @@ list(
     mutate(across(c(int_strength, max_int),
         ~map2(.x, bm_sp,
           function(y, sp) {
-            if (length(sp) > 1) {
-              y %*% diag(1 / sp)
-            } else {
-              y %*% (1 / sp)
-            }
+              y %*% diag(1 / sp, nrow = length(sp))
           }
         )
       )
       ),
   pattern = sim_files_no_ts_d
   ),
-  tar_target(sim_ts_mat_d,
-  try({
+  tar_target(sim_ts_mat_d,{
     open_dataset(paste0(sim_dir_d, sim_files_ts_d), format = "arrow") %>%
         collect() %>%
         # Transform back interaction strength into matrices
         mutate(across(where(is.list), as.list)) %>%
         filter(!map_lgl(species, is.null)) %>%
         mutate(
-          species = map(species,
+          species = map(species, 
           ~matrix(.x, nrow = 500)
           ),
           stoch = map(stoch,
           ~matrix(.x, nrow = 500)
           )
           )
-          }),
+          },
     pattern = sim_files_ts_d
   ),
   tar_target(sim_net_d,
@@ -389,19 +384,27 @@ list(
     select(!where(is.list))
   ),
   tar_target(sim_ts_d,
-    try(open_dataset(paste0(sim_dir_d, sim_files_ts_d),
-          format = "arrow") %>%
-        collect() %>%
-        # Transform back interaction strength into matrices
-        mutate(across(where(is.list), as.list)) %>%
-        filter(!map_lgl(species, is.null)) %>%
+  sim_ts_mat_d %>%
+        left_join(sim_prep_d %>%
+          select(sim_id, d, alive_species),
+          by = "sim_id") %>% 
+        filter(!map_lgl(alive_species, ~length(.x) == 0)) %>%
         mutate(
-          stoch_d = map2(species, stoch, function(bm, d_stoch) {
-            .1 * bm * exp(d_stoch)
+          species = map(species,
+            function (x) {
+            matrix(x, nrow = 500)[300:500, , drop = FALSE]
+            }
+          ),
+          stoch = map(stoch, 
+            function (x) {
+              matrix(x, nrow = 500)[300:500, , drop = FALSE]
+            }
+          ),
+          d = map2(d, alive_species, ~.x[.y]),
+          stoch_d = pmap(list(bm = species, stoch = stoch, d = d),
+            function (bm, stoch, d){
+              bm %*% diag(d, nrow = length(d)) * exp(stoch)
             }),
-          species = map(species, ~matrix(.x, nrow = 500)),
-          stoch = map(stoch, ~matrix(.x, nrow = 500)),
-          stoch_d = map(stoch_d, ~matrix(.x, nrow = 500)),
           cpe = map_dbl(species, compensatory_effect),
           cpe_env = map_dbl(stoch_d, compensatory_effect),
           cpe_int = cpe / cpe_env,
@@ -417,10 +420,85 @@ list(
           sae_even = map_dbl(sae, ~.x["even"]),
           evenness_sae = map_dbl(sae, ~.x["eveness"])
         ) %>%
-        select(-species, -stoch_d, -stoch)),
-        pattern = sim_files_ts_d
-  )
+        select(-species, -stoch_d, -stoch)
+   )
 )
+```
+
+```{r, eval = FALSE}
+tar_load(c(sim_dir_d, sim_files_ts_d))
+ti
+tu <- matrix(ti$stoch[[1000]], nrow = 500)
+head(tu)
+```
+
+
+```{r, eval = FALSE}
+tar_load(sim_fw)
+sim_fw %>%
+  group_by(Z, rho) %>%
+  summarise(env = mean(cpe_env))
+```
+
+
+```{r, eval = FALSE}
+tar_load(sim_stab_d)
+tar_load(sim_prep_d)
+sp <- matrix(1:4, nrow = 2)
+stoch <- matrix(rep(c(.5, 1), each = 2), nrow = 2)
+sp * stoch
+```
+
+```{r, eval = FALSE}
+tar_load(sim_ts_mat_d)
+sim_ts_mat_d %>%
+  mutate(ncol = map_dbl(species, ncol)) %>%
+  filter(ncol == 1)
+tar_load(sim_prep_d)
+ti <- sim_prep_d %>%
+  select(sim_id, d, alive_species) %>%
+  left_join(sim_ts_mat_d) %>%
+  filter(!map_lgl(alive_species, ~length(.x) == 0)) %>%
+  mutate(
+    d = map2(d, alive_species, ~.x[.y])
+  )
+
+ti <- sim_ts_mat_d %>%
+  left_join(sim_prep_d %>%
+  select(sim_id, d, alive_species)) %>%
+  filter(!map_lgl(alive_species, ~length(.x) == 0)) %>%
+  mutate(
+    d = map2(d, alive_species, ~.x[.y]),
+    species = map(species, ~.x[300:500, , drop = FALSE]),
+    stoch = map(stoch, ~.x[300:500, , drop =FALSE]),
+    stoch_d = pmap(list(bm = species, stoch = stoch, d = d),
+      function (bm, stoch, d){
+          bm %*% diag(d, nrow = length(d)) * exp(stoch)
+  })
+  )
+rowSums(sim_ts_mat_d$stoch[[40]]) == 0
+head(sim_ts_mat_d$species[[1]]) 
+sim_ts_mat_d$stoch[[1]] 
+length(sim_prep_d$d[[1]])
+
+ti %>%
+  mutate(
+    cpe = map_dbl(species, compensatory_effect),
+    cpe_env = map_dbl(stoch_d, compensatory_effect),
+    cpe_int = cpe / cpe_env
+  )
+ti %>%
+  slice(1927)
+to <- ti %>% filter(map_lgl(alive_species, ~length(.x) == 1))
+head(to$species[[1]]) %*% diag(to$d[[1]], nrow = 1) * head(to$stoch[[1]])
+all(1, 1, 1)
+
+tail(tu$species[[1]])
+tu$d[[1]]
+ti$d[[1]]
+ti$alive_species[[1]]
+tail(tu$stoch_d[[1]])
+tail(tu$species[[1]]) %*% diag(tu$d[[1]])
 ```
 
 
@@ -454,16 +532,16 @@ list(
     ),
   tar_target(sem_model_list,
     list(
-      #ct_alive = lm(ct_alive ~ ct + S, sim_fw_sem),
-      #richness = lm(richness ~ ct + S, sim_fw_sem),
-      #  max_tlvl = lm(max_tlvl ~ ct + S + Z, sim_fw_sem),
-      w_avg_tlvl = lm(w_avg_tlvl ~ richness + ct_alive + Z, sim_fw_sem),
-      avg_omnivory = lm(avg_omnivory ~ ct_alive + richness, sim_fw_sem),
-      avg_int_strength = lm(avg_int_strength ~ ct_alive + richness + h, sim_fw_sem),
-      pop_stab = lm(pop_stab ~ Z + richness + avg_int_strength + w_avg_tlvl + ct_alive + env_stoch + h, sim_fw_sem),
-      evenness_sae = lm(evenness_sae ~ richness + avg_int_strength + w_avg_tlvl + ct_alive, sim_fw_sem),
+      ct_alive = lm(ct_alive ~ ct + S, sim_fw_sem),
+      richness = lm(richness ~ ct + S, sim_fw_sem),
+      #max_tlvl = lm(max_tlvl ~ ct + S + Z, sim_fw_sem),
+      w_avg_tlvl = lm(w_avg_tlvl ~ ct + S + Z, sim_fw_sem),
+      #avg_omnivory = lm(avg_omnivory ~ ct + S, sim_fw_sem),
+      avg_int_strength = lm(avg_int_strength ~ ct + S + h + Z, sim_fw_sem),
+      pop_stab = lm(pop_stab ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + env_stoch + h + Z, sim_fw_sem),
+      evenness_sae = lm(evenness_sae ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + Z, sim_fw_sem),
       sae_even = lm(sae_even ~ richness, sim_fw_sem),
-      cpe_int = lm(cpe_int ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h, sim_fw_sem),
+      cpe_int = lm(cpe_int ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + Z, sim_fw_sem),
       cpe_env = lm(cpe_env ~ richness + rho, sim_fw_sem),
       async = lm(async ~ sae_even + evenness_sae + cpe_env + cpe_int, sim_fw_sem),
       stab_com = lm(stab_com ~ pop_stab + async, sim_fw_sem)
@@ -531,6 +609,7 @@ tar_load(c(sem, sim_fw_sem))
 
 summary(sim_fw$stab_com)
 tar_load(sim_prep_d)
+ 
 tar_load(sim_fw)
 tar_load(sim)
 tar_load(c(sim_files_ts_d, sim_files_no_ts_d))
@@ -548,7 +627,6 @@ ti <- sim_prep_d$int_strength[[4265]][sim_prep_d$alive_species[[4265]], sim_prep
 mi <- sim_prep_d$bm_sp[[4265]]
 
 
-m <- matrix(seq(1:9), ncol = 3)
 bm <- c(1, 2, .5)
 diag(bm)
 (map(1:ncol(m), ~m[.x, ] / bm[.x]))
@@ -557,10 +635,22 @@ m / matrix(rep(bm, each = nrow(m)), ncol = 3)
 rindlist
 
 m / diag(bm)
-B
+bm
 t(apply(m, 1, "/", bm))
 
 summary(sim_fw$avg_omnivory)
+
+get_mortality_biomass_dyn <- function(bm, stoch, d) {
+  stopifnot(all.equal(length(d), ncol(stoch), ncol(bm)))
+  stopifnot(all(is.matrix(bm), is.matrix(stoch)))
+  bm %*% diag(d, nrow = length(d)) * exp(stoch)
+}
+
+m <- matrix(seq(1:9), ncol = 3)
+bm <- c(.1, 1, 10)
+stoch <- matrix(rep(1/bm, each = nrow(m)), ncol = 3)
+
+get_mortality_biomass_dyn(bm = bm, stoch = stoch, m = m)
 ```
 
 
@@ -583,6 +673,8 @@ y %*% diag(x) * z
 
 ```{r}
 tar_load(sim_prep_d)
+tar_load(sim_fw)
+summary(sim_fw$avg_int_strength)
 ```
 
 
@@ -590,7 +682,7 @@ tar_load(sim_prep_d)
 ```{r}
 tar_load(sim_fw)
 sim_fw %>%
-  group_by(rho) %>%
+  group_by(Z, rho) %>%
   summarise(
     cpe_env = mean(cpe_env, na.rm = TRUE),
     cpe_int = mean(cpe_int, na.rm = TRUE),
