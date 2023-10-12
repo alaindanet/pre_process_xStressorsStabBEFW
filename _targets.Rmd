@@ -53,7 +53,7 @@ source(paste0(dir_fun, "R/sem_helpers.R"))
 compute_metabolic_loss <- function(Z = NULL, tlvl = NULL, ax = .88, bx = -0.25) {
   M = Z ^ (tlvl - 1)
   x = ax*M^(bx)
-  x[tlvl == 1] <- 0 
+  x[tlvl == 1] <- 0
   x
 }
 ```
@@ -62,7 +62,7 @@ compute_metabolic_loss <- function(Z = NULL, tlvl = NULL, ax = .88, bx = -0.25) 
 
 Our first target borrows the `airquality` dataset built into base R.
 
-## Sim with metabolic death 
+## Sim with metabolic death
 
 ```{targets raw_sim}
 list(
@@ -206,7 +206,7 @@ list(
 ```
 
 ```{targets stab_consumer, tar_simple = TRUE}
-sim_prep %>% 
+sim_prep %>%
   select(all_of(c(var_param_sim, "alive_species", "tlvl", "max_tlvl"))) %>%
   left_join(sim_ts_mat_param) %>%
   filter(!is.na(S), max_tlvl > 1) %>%
@@ -289,7 +289,7 @@ sim_stab_d %>%
   unnest(c(tlvl_bm_sd_sp))
 ```
 
-## Sim with allometric death 
+## Sim with allometric death
 
 ```{targets prep-allo_sim}
 list(
@@ -324,7 +324,7 @@ list(
         )
       )
       ) %>%
-  # Per capita interaction strength 
+  # Per capita interaction strength
     mutate(across(c(int_strength, max_int),
         ~map2(.x, bm_sp,
           function(y, sp) {
@@ -342,7 +342,7 @@ list(
         mutate(across(where(is.list), as.list)) %>%
         filter(!map_lgl(species, is.null)) %>%
         mutate(
-          species = map(species, 
+          species = map(species,
           ~matrix(.x, nrow = 500)
           ),
           stoch = map(stoch,
@@ -387,7 +387,7 @@ list(
   sim_ts_mat_d %>%
         left_join(sim_prep_d %>%
           select(sim_id, d, alive_species),
-          by = "sim_id") %>% 
+          by = "sim_id") %>%
         filter(!map_lgl(alive_species, ~length(.x) == 0)) %>%
         mutate(
           species = map(species,
@@ -395,7 +395,7 @@ list(
             matrix(x, nrow = 500)[300:500, , drop = FALSE]
             }
           ),
-          stoch = map(stoch, 
+          stoch = map(stoch,
             function (x) {
               matrix(x, nrow = 500)[300:500, , drop = FALSE]
             }
@@ -477,8 +477,8 @@ ti <- sim_ts_mat_d %>%
   })
   )
 rowSums(sim_ts_mat_d$stoch[[40]]) == 0
-head(sim_ts_mat_d$species[[1]]) 
-sim_ts_mat_d$stoch[[1]] 
+head(sim_ts_mat_d$species[[1]])
+sim_ts_mat_d$stoch[[1]]
 length(sim_prep_d$d[[1]])
 
 ti %>%
@@ -502,7 +502,7 @@ tail(tu$species[[1]]) %*% diag(tu$d[[1]])
 ```
 
 
-# Dataset 
+# Dataset
 
 ```{targets}
 list(
@@ -536,7 +536,7 @@ list(
       richness = lm(richness ~ ct + S, sim_fw_sem),
       #max_tlvl = lm(max_tlvl ~ ct + S + Z, sim_fw_sem),
       w_avg_tlvl = lm(w_avg_tlvl ~ ct + S + Z, sim_fw_sem),
-      #avg_omnivory = lm(avg_omnivory ~ ct + S, sim_fw_sem),
+      avg_omnivory = lm(avg_omnivory ~ ct + S, sim_fw_sem),
       avg_int_strength = lm(avg_int_strength ~ ct + S + h + Z, sim_fw_sem),
       pop_stab = lm(pop_stab ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + env_stoch + h + Z, sim_fw_sem),
       evenness_sae = lm(evenness_sae ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + Z, sim_fw_sem),
@@ -555,24 +555,56 @@ list(
   tar_target(sem_coeff, {
     ti <- summary(sem)$coefficients[, c(1, 2, 8, 9)]
     colnames(ti)[4] <- "Signif"
-    ti #%>%
-      #filter(abs(Std.Estimate) > 0.1)# %>%
-#  mutate(
-#    Response = var_replacement()[Response],
-#    Predictor = var_replacement()[Predictor]
-#  ) %>%
+    ti
     }),
   tar_target(sem_eff, {
     semEff(sem, ci.type = "perc", R = 100, seed = 13, parallel = "snow", data = sim_fw_sem,
-      ncpus = future::availableCores() 
+      ncpus = future::availableCores()
     )
     }
   )
 )
 ```
 
+```{targets simplified-sem}
+list(
+  tar_target(sem_simplified_model_list,
+    list(
+      ct_alive = lm(ct_alive ~ ct + S, sim_fw_sem),
+      richness = lm(richness ~ ct + S, sim_fw_sem),
+      #max_tlvl = lm(max_tlvl ~ ct + S + Z, sim_fw_sem),
+      w_avg_tlvl = lm(w_avg_tlvl ~ ct + S + Z, sim_fw_sem),
+      avg_omnivory = lm(avg_omnivory ~ ct + S + Z, sim_fw_sem),
+      avg_int_strength = lm(avg_int_strength ~ ct + S + Z, sim_fw_sem),
+      pop_stab = lm(pop_stab ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + env_stoch + h, sim_fw_sem),
+      sae_total = lm(sae_total ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h, sim_fw_sem),
+      cpe = lm(cpe ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + rho, sim_fw_sem),
+      async = lm(async ~ sae_total + cpe, sim_fw_sem),
+      stab_com = lm(stab_com ~ pop_stab + async, sim_fw_sem)
+    )
+    ),
+  tar_target(sem_simplified, {
+    ti <- as.psem(sem_simplified_model_list)
+    update(ti, avg_omnivory %~~% w_avg_tlvl)
+    }
+    ),
+  tar_target(sem_simplified_coeff, {
+    ti <- summary(sem_simplified)$coefficients[, c(1, 2, 8, 9)]
+    colnames(ti)[4] <- "Signif"
+    ti
+    }),
+  tar_target(sem_simplified_eff, {
+    semEff(sem_simplified, ci.type = "perc", R = 100, seed = 13, parallel = "snow", data = sim_fw_sem,
+      ncpus = future::availableCores()
+    )
+    }
+  )
+  )
+```
 
-# Make targets  
+
+
+# Make targets
 
 ```{r}
 ncpu <- future::availableCores()
@@ -594,7 +626,7 @@ At this point, you can go back and run `{targets}` chunks in interactive mode wi
 # Output
 
 ```{r load-fun}
-sapply(c("targets","tidyverse", "magrittr", "cowplot", "here", "arrow", "piecewiseSEM", "semEff", "easystats", "glmmTMB", "ggcorrplot", "kableExtra"), require, character.only = TRUE)  
+sapply(c("targets","tidyverse", "magrittr", "cowplot", "here", "arrow", "piecewiseSEM", "semEff", "easystats", "glmmTMB", "ggcorrplot", "kableExtra"), require, character.only = TRUE)
 dir_fun <- "~/xStressorsStabBEFW/"
 source(paste0(dir_fun, "R/network_metrics.R"))
 source(paste0(dir_fun, "R/string_replacements.R"))
@@ -609,7 +641,7 @@ tar_load(c(sem, sim_fw_sem))
 
 summary(sim_fw$stab_com)
 tar_load(sim_prep_d)
- 
+
 tar_load(sim_fw)
 tar_load(sim)
 tar_load(c(sim_files_ts_d, sim_files_no_ts_d))
@@ -664,8 +696,8 @@ tar_load(sim_ts_mat_param)
 ```
 ```{r}
 # Test that matrix multiplication works as expected
-x <- 1:3 
-y <- matrix(1:6, ncol = 3) 
+x <- 1:3
+y <- matrix(1:6, ncol = 3)
 z <- 1/(y %*% diag(x))
 y %*% diag(x)
 y %*% diag(x) * z
