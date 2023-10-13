@@ -606,7 +606,7 @@ list(
 
 # Make targets
 
-```{r}
+```{r tar_make}
 ncpu <- future::availableCores()
 if (ncpu > 1) {
   tar_make_future(workers = min(future::availableCores() - 1, 24))
@@ -637,7 +637,7 @@ source(paste0(dir_fun, "R/sem_helpers.R"))
 
 ```{r}
 tar_load(c(sem, sim_fw_sem))
-
+tar_load(sem_simplified_eff)
 
 summary(sim_fw$stab_com)
 tar_load(sim_prep_d)
