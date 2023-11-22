@@ -436,7 +436,7 @@ head(tu)
 ```{r, eval = FALSE}
 tar_load(sim_fw)
 sim_fw %>%
-  group_by(Z, rho) %>%
+  group_by(Z, resp_div) %>%
   summarise(env = mean(cpe_env))
 ```
 
@@ -515,7 +515,8 @@ list(
         max_tlvl > 1,
         !disconnected_prod
         ) %>%
-    select(!where(is.list))
+    select(!where(is.list)) %>%
+    mutate(resp_div = 1 - rho)
    ),
    tar_target(sim_fw_df, as.data.frame(sim_fw))
   )
@@ -542,7 +543,7 @@ list(
       evenness_sae = lm(evenness_sae ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + Z, sim_fw_sem),
       sae_even = lm(sae_even ~ richness, sim_fw_sem),
       cpe_int = lm(cpe_int ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + Z, sim_fw_sem),
-      cpe_env = lm(cpe_env ~ richness + rho, sim_fw_sem),
+      cpe_env = lm(cpe_env ~ richness + resp_div, sim_fw_sem),
       async = lm(async ~ sae_even + evenness_sae + cpe_env + cpe_int, sim_fw_sem),
       stab_com = lm(stab_com ~ pop_stab + async, sim_fw_sem)
     )
@@ -578,7 +579,7 @@ list(
       avg_int_strength = lm(avg_int_strength ~ ct + S + Z, sim_fw_sem),
       pop_stab = lm(pop_stab ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + env_stoch + h, sim_fw_sem),
       sae_total = lm(sae_total ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h, sim_fw_sem),
-      cpe = lm(cpe ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + rho, sim_fw_sem),
+      cpe = lm(cpe ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + resp_div, sim_fw_sem),
       async = lm(async ~ sae_total + cpe, sim_fw_sem),
       stab_com = lm(stab_com ~ pop_stab + async, sim_fw_sem)
     )
@@ -714,7 +715,7 @@ summary(sim_fw$avg_int_strength)
 ```{r}
 tar_load(sim_fw)
 sim_fw %>%
-  group_by(Z, rho) %>%
+  group_by(Z, resp_div) %>%
   summarise(
     cpe_env = mean(cpe_env, na.rm = TRUE),
     cpe_int = mean(cpe_int, na.rm = TRUE),
@@ -722,7 +723,7 @@ sim_fw %>%
   )
 tar_load(stab_consumer)
 sim_fw_cons %>%
-  group_by(rho) %>%
+  group_by(resp_div) %>%
   summarise(
     cpe_env = mean(cpe_env, na.rm = TRUE),
     cpe_int = mean(cpe_int, na.rm = TRUE),
@@ -737,10 +738,10 @@ tar_load(sim_param)
 tar_load(sim_prep)
 sim_prep %>%
   filter(max_tlvl > 1) %>%
-  group_by(rho) %>%
+  group_by(resp_div) %>%
   summarise(sync = mean(sync, na.rm = TRUE))
 colnames(sim_fw)
-cor(sim_fw$evenness_sae, sim_fw$rho, use = "pairwise.complete.obs")
+cor(sim_fw$evenness_sae, sim_fw$resp_div, use = "pairwise.complete.obs")
 ```
 
 
