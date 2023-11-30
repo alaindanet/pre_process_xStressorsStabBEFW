@@ -444,20 +444,24 @@ list(
 ```
 ```{targets sim_for_plot}
 list(
-  tar_target(sim_for_plot,
+  tar_target(sim_prep_for_plot,
   sim_fw %>%
-  filter(
-    rho %in% c(0, .25, .75, 1),
-    h %in% c(2, 3),
-    env_stoch %in% c(.1, .3, .6),
-    S %in% c(10, 40, 60),
-    Z %in% c(1, 10, 100)
-    ) %>%
-    select(sim_id) %>%
-    left_join(sim_prep_d %>%
-      select(sim_id, int_strength, tlvl)
-    ) %>%
-    left_join(sim_ts_d_prep),
+    filter(
+      rho %in% c(0, .25, .75, 1),
+      h %in% c(2, 3),
+      env_stoch %in% c(.1, .3, .6),
+      S %in% c(10, 40, 60),
+      Z %in% c(1, 10, 100)
+      ) %>%
+      select(sim_id) %>%
+      left_join(sim_prep_d %>%
+        select(sim_id, int_strength, tlvl)
+      )
+    ),
+  tar_target(sim_for_plot,
+   sim_ts_d_prep %>%
+     filter(sim_id %in% sim_prep_for_plot$sim_id) %>%
+     left_join(sim_prep_for_plot),
     pattern = map(sim_ts_d_prep)
 )
   )
@@ -626,7 +630,7 @@ list(
 ncpu <- future::availableCores()
 if (ncpu > 1) {
   tar_make_future(workers = min(future::availableCores() - 1, 24))
-  #tar_make_future(workers = 5)
+  tar_make_future(workers = 5)
 } else {
   tar_make()
 }
@@ -788,6 +792,8 @@ cor(sim_fw$evenness_sae, sim_fw$resp_div, use = "pairwise.complete.obs")
 ```{r save-ts-sample}
 dir_to_save <- "/mnt/parscratch/users/bi1ahd/pre_process_xStressorsStabBEFW_targets/objects/"
 tar_load(sim_for_plot)
+length(unique(sim_for_plot$sim_id))
+nrow(sim_for_plot)
 save(sim_for_plot, file = paste0(dir_to_save, "sim_for_plot"))
 ```
 
