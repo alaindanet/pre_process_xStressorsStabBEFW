@@ -25,9 +25,6 @@ install.packages(c("biglm", "dplyr", "ggplot2", "readr", "targets", "tidyr"))
 
 If you are using old versions of `targets` (<= 0.7.0) and/or `knitr` (<= 1.33), you will need to load the `targets` package in the R Markdown document in order for Target Markdown code chunks to work.
 
-```{r}
-library(targets)
-```
 
 Near the top of the document, you may also wish to remove the `_targets_r` directory previously written by non-interactive runs of the report. Otherwise, your pipeline may contain superfluous targets.
 
@@ -56,11 +53,13 @@ compute_metabolic_loss <- function(Z = NULL, tlvl = NULL, ax = .88, bx = -0.25) 
   x[tlvl == 1] <- 0
   x
 }
+source(here::here("R", "data_prep.R"))
+source(here::here("R", "model_helpers.R"))
 ```
 
 # Targets
 
-Our first target borrows the `airquality` dataset built into base R.
+
 
 ## Sim with metabolic death
 
@@ -289,159 +288,87 @@ sim_stab_d %>%
   unnest(c(tlvl_bm_sd_sp))
 ```
 
+```{r}
+
+```
+
+
 ## Sim with allometric death
+
+```{r, eval=FALSE}
+#https://books.ropensci.org/targets/static.html#dynamic-within-static-branching 
+random_seed_target <- tar_target(random_seed, seq_len(10))
+targets <- tar_map(
+  values = tibble(method_function = rlang::syms(c("method1", "method2"))),
+  tar_target(
+    analysis,
+    method_function("NIH", seed = random_seed),
+    pattern = map(random_seed)
+  ),
+  tar_target(
+    summary,
+    summarize_analysis(analysis),
+    pattern = map(analysis)
+  )
+)
+tar_map(
+  sim_folders = tibble(
+    dir_name = c("simCSh_allo_d5", "simCSh_allo_d5_no_rerun",
+      "simCSh_non_allo_d5_no_rerun"),
+    full_path = paste0("/mnt/parscratch/users/bi1ahd/sim/", dir_name)
+    ) %>%
+  mutate(
+    file_no_ts = map(full_path, ~list.files(.x) %>% .[!str_detect(., "_ts")]),
+    file_ts = map(full_path, ~list.files(.x) %>% .[!str_detect(., "_ts")]),
+  )
+  ),
+tar_target(file_no_ts, list.files(full_path) %>% .[!str_detect(., "_ts")],)
+)
+
+```
+
 
 ```{targets prep-allo_sim}
 list(
-  tar_target(extinction_threshold, 1e-5),
-  tar_target(sim_dir_d, '/mnt/parscratch/users/bi1ahd/sim/simCSh_allo_d4/'),
+  tar_target(extinction_threshold, 0),
+  tar_target(sim_dir_d, '/mnt/parscratch/users/bi1ahd/sim/simCSh_allo_d5/'),
   tar_target(var_param_sim_d, c("fw_id", "rho", "env_stoch", "Z", "h")),
-  tar_target(sim_files_ts_d,
-    list.files(sim_dir_d) %>% #
-      .[str_detect(., "_ts")]
-    ),
-  tar_target(sim_files_no_ts_d,
-    list.files(sim_dir_d)%>%
-      .[!str_detect(., "_ts")]
-    ),
+  tar_target(sim_files_ts_d, get_ts_file(dir = sim_dir_d)),
+  tar_target(sim_files_no_ts_d, get_no_ts_file(dir = sim_dir_d)),
   tar_target(sim_param_d2,
-    open_dataset("~/xStressorsStabBEFW/scripts/param_comb_ct_S_h_d3.arrow",
-      format = "arrow") %>%
-    collect() %>%
-    rename(env_stoch = sigma)),
+    prep_param_table(file = "~/xStressorsStabBEFW/scripts/param_comb_ct_S_h_d3.arrow")),
   tar_target(sim_prep_d,
-    open_dataset(paste0(sim_dir_d, sim_files_no_ts_d),
-      format = "arrow") %>%
-    collect() %>%
-    # Transform back interaction strength into matrices
-    mutate(across(where(is.list), as.list)) %>%
-    filter(!is.na(richness)) %>%
-    mutate(
-      alive_species = map(bm_sp, ~which(.x > extinction_threshold)),
-      richness = map_int(alive_species, ~length(.x)),
-      bm_sp_alive = map2(bm_sp, alive_species, ~.x[.y])
-      ) %>%
-    # Get rid of the extinct species to compute per capita int_strength
-    mutate(across(c(int_strength, max_int),
-        ~map2(.x, alive_species,
-          function(y, sp) {
-            mat <- matrix(y, nrow = sqrt(length(y)))
-            mat[sp, sp, drop = FALSE]
-          }
-        )
-      )
-      ) %>%
-  # Per capita interaction strength
-    mutate(across(c(int_strength, max_int),
-        ~map2(.x, bm_sp_alive,
-          function(y, sp) {
-              y %*% diag(1 / sp, nrow = length(sp))
-          }
-        )
-      )
+    prep_sim_for_analysis(
+      dir = sim_dir_d,
+      file = sim_files_no_ts_d,
+      extinct_bm_threshold = extinction_threshold,
+      param_var = var_param_sim_d,
+      param_table = sim_param_d2
       ),
-  pattern = sim_files_no_ts_d
+    pattern = sim_files_no_ts_d
   ),
-  tar_target(sim_ts_mat_d,{
-    open_dataset(paste0(sim_dir_d, sim_files_ts_d), format = "arrow") %>%
-        collect() %>%
-        # Transform back interaction strength into matrices
-        mutate(across(where(is.list), as.list)) %>%
-        filter(!map_lgl(species, is.null)) %>%
-        mutate(
-          species = map(species,
-          ~matrix(.x, nrow = 500)
-          ),
-          stoch = map(stoch,
-          ~matrix(.x, nrow = 500)
-          )
-          )
-          },
+  tar_target(sim_ts_mat_d,
+    make_ts_vector_to_matrices(
+      dir = sim_dir_d,
+      file = sim_files_ts_d,
+      ntimestep = 500),
     pattern = sim_files_ts_d
   ),
-  tar_target(sim_net_d,
-    sim_prep_d %>%
-      mutate(
-        persistence = richness / S,
-        async = 1 / sync,
-        stab_pop = 1 / avg_cv_sp,
-        ct_alive = map_dbl(max_int,
-          ~ifelse(sum(.x) == 0, 0,
-            sum(.x > 0) / ((ncol(.x))^2))),
-        max_tlvl = map2_dbl(tlvl, alive_species,
-          function(lvl, alive) {
-            x <- lvl[alive]
-            ifelse(length(x) == 0, 0, max(x))
-          }),
-        max_max_int = map_dbl(max_int,
-          ~ifelse(length(.x[.x > 0]) == 0, 0, max(.x[.x > 0]))
-          ),
-        avg_int_per_cap =  map_dbl(int_strength,
-          ~ifelse(length(.x[.x > 0]) == 0, 0, mean(.x[.x > 0]))
-          ),
-        avg_max_int = map_dbl(max_int,
-          ~ifelse(length(.x[.x > 0]) == 0, 0, mean(.x[.x > 0]))
-          ),
-        sd_max_int = map_dbl(max_int,
-          ~ifelse(length(.x[.x > 0]) <= 1, 0, sd(.x[.x > 0]))
-          ),
-        cv_max_int = sd_max_int / avg_max_int,
-        inv_sd_max_int = 1 / sd_max_int,
-        gini_max_int = map_dbl(max_int,
-          ~ifelse(length(.x[.x > 0]) == 0, 0, gini(.x[.x > 0]))),
-        avg_omnivory = map_dbl(omnivory, mean),
-        disconnected_prod = map_lgl(max_int,
-          ~any(colSums(.x) == 0 & rowSums(.x) == 0))
-        ) %>%
-    select(!where(is.list))
-  ),
+  tar_target(sim_net_d, compute_network_metrics(sim = sim_prep_d)),
   tar_target(sim_ts_d_prep,
-  sim_ts_mat_d %>%
-    left_join(sim_prep_d %>%
-      select(sim_id, d, alive_species),
-      by = "sim_id") %>%
-    filter(!map_lgl(alive_species, ~length(.x) == 0)) %>%
-    mutate(
-      species = map2(species, alive_species,
-        function (x, alive) {
-        matrix(x, nrow = 500)[, alive, drop = FALSE]
-        }
-      ),
-      stoch = map2(stoch, alive_species,
-        function (x, alive) {
-          matrix(x, nrow = 500)[, alive, drop = FALSE]
-        }
-      ),
-      d = map2(d, alive_species, ~.x[.y]),
-      stoch_d = pmap(list(bm = species, stoch = stoch, d = d),
-        function (bm, stoch, d){
-          bm %*% diag(d, nrow = length(d)) * exp(stoch)
-        })),
+    filter_alive_species_ts_matrices(
+      ts_mat = sim_ts_mat_d,
+      prep_sim = sim_prep_d
+    ),
     pattern = map(sim_ts_mat_d)
  ),
- tar_target(sim_ts_d,
-   sim_ts_d_prep %>%
-     mutate(
-      cpe = map_dbl(species, compensatory_effect),
-      cpe_env = map_dbl(stoch_d, compensatory_effect),
-      cpe_int = cpe / cpe_env,
-      stab_com = map_dbl(species, community_stability),
-      pop_stab = map_dbl(species, population_stability),
-      bm_sp = map(species, ~colMeans(.x)),
-      bm_total = map_dbl(bm_sp, ~sum(.x)),
-      sd_sp = map(species, ~apply(.x, 2, sd)),
-      sum_sd_sp = map_dbl(sd_sp, ~sum(.x)),
-      async = map_dbl(species, asynchrony),
-      sae = map(species, statistical_averaging_effect),
-      sae_total = map_dbl(sae, ~.x["total"]),
-      sae_even = map_dbl(sae, ~.x["even"]),
-      evenness_sae = map_dbl(sae, ~.x["eveness"])
-    ) %>%
-    select(-species, -stoch_d, -stoch),
+ tar_target(sim_stab_d,
+   compute_stability_metrics_ts(sim_ts_prep = sim_ts_d_prep),
     pattern = map(sim_ts_d_prep)
  )
 )
 ```
+
 ```{targets sim_for_plot}
 list(
   tar_target(sim_prep_for_plot,
@@ -450,7 +377,7 @@ list(
       rho %in% c(0, .25, .75, 1),
       h %in% c(2, 3),
       env_stoch %in% c(.1, .3, .6),
-      S %in% c(10, 40, 60),
+      S %in% c(10, 20, 30, 40),
       Z %in% c(1, 10, 100)
       ) %>%
       select(sim_id) %>%
@@ -467,121 +394,36 @@ list(
   )
 ```
 
-
-```{r, eval = FALSE}
-tar_load(sim_ts_mat_d)
-sim_ts_mat_d %>%
-  mutate(ncol = map_dbl(species, ncol)) %>%
-  filter(ncol == 1)
-tar_load(sim_prep_d)
-ti <- sim_prep_d %>%
-  select(sim_id, d, alive_species) %>%
-  left_join(sim_ts_mat_d) %>%
-  filter(!map_lgl(alive_species, ~length(.x) == 0)) %>%
-  mutate(
-    d = map2(d, alive_species, ~.x[.y])
-  )
-
-ti <- sim_ts_mat_d %>%
-  left_join(sim_prep_d %>%
-  select(sim_id, d, alive_species)) %>%
-  filter(!map_lgl(alive_species, ~length(.x) == 0)) %>%
-  mutate(
-    d = map2(d, alive_species, ~.x[.y]),
-    species = map(species, ~.x[300:500, , drop = FALSE]),
-    stoch = map(stoch, ~.x[300:500, , drop =FALSE]),
-    stoch_d = pmap(list(bm = species, stoch = stoch, d = d),
-      function (bm, stoch, d){
-          bm %*% diag(d, nrow = length(d)) * exp(stoch)
-  })
-  )
-rowSums(sim_ts_mat_d$stoch[[40]]) == 0
-head(sim_ts_mat_d$species[[1]])
-sim_ts_mat_d$stoch[[1]]
-length(sim_prep_d$d[[1]])
-
-ti %>%
-  mutate(
-    cpe = map_dbl(species, compensatory_effect),
-    cpe_env = map_dbl(stoch_d, compensatory_effect),
-    cpe_int = cpe / cpe_env
-  )
-ti %>%
-  slice(1927)
-to <- ti %>% filter(map_lgl(alive_species, ~length(.x) == 1))
-head(to$species[[1]]) %*% diag(to$d[[1]], nrow = 1) * head(to$stoch[[1]])
-all(1, 1, 1)
-
-tail(tu$species[[1]])
-tu$d[[1]]
-ti$d[[1]]
-ti$alive_species[[1]]
-tail(tu$stoch_d[[1]])
-tail(tu$species[[1]]) %*% diag(tu$d[[1]])
-```
-
-
 # Dataset
 
 ```{targets}
 list(
-  tar_target(sim_stab_d, sim_ts_d %>% as_tibble()),
-  tar_target(sim, left_join(sim_net_d %>%
-  select(-async, -stab_com), sim_stab_d, by = "sim_id")),
-  tar_target(sim_fw,
-    sim %>%
-      filter(
-        max_tlvl > 1,
-        !disconnected_prod
-        ) %>%
-    select(!where(is.list)) %>%
-    mutate(resp_div = 1 - rho)
-   ),
-   tar_target(sim_fw_df, as.data.frame(sim_fw))
-  )
+  tar_target(sim, get_sim_dataset(
+      sim_stab = sim_stab_d,
+      sim_net = sim_net_d
+    )),
+  tar_target(sim_fw, filter_sim_fw(x = sim))
+)
 ```
 
 # SEM
 
 ```{targets sem-process}
 list(
-  tar_target(sim_fw_sem,
-    sim_fw_df %>%
-      mutate(across(c(stab_com, pop_stab, async, cpe, sae_total, evenness_sae,
-            sae_even, cpe_int, cpe_env), log))
-    ),
+  tar_target(sim_fw_sem, get_sem_dataset(x = sim_fw)),
   tar_target(sem_model_list,
-    list(
-      ct_alive = lm(ct_alive ~ ct + S, sim_fw_sem),
-      richness = lm(richness ~ ct + S, sim_fw_sem),
-      #max_tlvl = lm(max_tlvl ~ ct + S + Z, sim_fw_sem),
-      w_avg_tlvl = lm(w_avg_tlvl ~ ct + S + Z, sim_fw_sem),
-      avg_omnivory = lm(avg_omnivory ~ ct + S, sim_fw_sem),
-      avg_int_strength = lm(avg_int_strength ~ ct + S + h + Z, sim_fw_sem),
-      pop_stab = lm(pop_stab ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + env_stoch + h + Z, sim_fw_sem),
-      evenness_sae = lm(evenness_sae ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + Z, sim_fw_sem),
-      sae_even = lm(sae_even ~ richness, sim_fw_sem),
-      cpe_int = lm(cpe_int ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + Z, sim_fw_sem),
-      cpe_env = lm(cpe_env ~ richness + resp_div, sim_fw_sem),
-      async = lm(async ~ sae_even + evenness_sae + cpe_env + cpe_int, sim_fw_sem),
-      stab_com = lm(stab_com ~ pop_stab + async, sim_fw_sem)
-    )
+    get_sem_model_list(sim_fw_sem = sim_fw_sem)
     ),
-  tar_target(sem, {
-    ti <- as.psem(sem_model_list)
-    update(ti, avg_omnivory %~~% w_avg_tlvl)
-    }
-    ),
-  tar_target(sem_coeff, {
-    ti <- summary(sem)$coefficients[, c(1, 2, 8, 9)]
-    colnames(ti)[4] <- "Signif"
-    ti
-    }),
-  tar_target(sem_eff, {
-    semEff(sem, ci.type = "perc", R = 100, seed = 13, parallel = "snow", data = sim_fw_sem,
-      ncpus = future::availableCores()
+  tar_target(sem, get_sem(model_list = sem_model_list)),
+  tar_target(sem_coeff, get_sem_coeff(sem = sem)),
+  tar_target(sem_eff,
+    get_sem_tot_effect(
+      sem = sem,
+      sem_data = sim_fw_sem, 
+      bootstrap_nb = 100,
+      nb_cores = future::availableCores(),
+      ci_type = "perc"
     )
-    }
   )
 )
 ```
@@ -589,35 +431,17 @@ list(
 ```{targets simplified-sem}
 list(
   tar_target(sem_simplified_model_list,
-    list(
-      ct_alive = lm(ct_alive ~ ct + S, sim_fw_sem),
-      richness = lm(richness ~ ct + S, sim_fw_sem),
-      #max_tlvl = lm(max_tlvl ~ ct + S + Z, sim_fw_sem),
-      w_avg_tlvl = lm(w_avg_tlvl ~ ct + S + Z, sim_fw_sem),
-      avg_omnivory = lm(avg_omnivory ~ ct + S + Z, sim_fw_sem),
-      avg_int_strength = lm(avg_int_strength ~ ct + S + Z, sim_fw_sem),
-      pop_stab = lm(pop_stab ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + env_stoch + h, sim_fw_sem),
-      sae_total = lm(sae_total ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h, sim_fw_sem),
-      cpe = lm(cpe ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + h + resp_div, sim_fw_sem),
-      async = lm(async ~ sae_total + cpe, sim_fw_sem),
-      stab_com = lm(stab_com ~ pop_stab + async, sim_fw_sem)
+    get_sem_simplified_model_list(sim_fw_sem = sim_fw_sem)),
+  tar_target(sem_simplified, get_sem(model_list = sem_simplified_model_list) ),
+  tar_target(sem_simplified_coeff, get_sem_coeff(sem = sem_simplified)),
+  tar_target(sem_simplified_eff, 
+    get_sem_tot_effect(
+      sem = sem_simplified,
+      sem_data = sim_fw_sem,
+      bootstrap_nb = 100,
+      nb_cores = future::availableCores(),
+      ci_type = "perc"
     )
-    ),
-  tar_target(sem_simplified, {
-    ti <- as.psem(sem_simplified_model_list)
-    update(ti, avg_omnivory %~~% w_avg_tlvl)
-    }
-    ),
-  tar_target(sem_simplified_coeff, {
-    ti <- summary(sem_simplified)$coefficients[, c(1, 2, 8, 9)]
-    colnames(ti)[4] <- "Signif"
-    ti
-    }),
-  tar_target(sem_simplified_eff, {
-    semEff(sem_simplified, ci.type = "perc", R = 100, seed = 13, parallel = "snow", data = sim_fw_sem,
-      ncpus = future::availableCores()
-    )
-    }
   )
   )
 ```
@@ -625,6 +449,12 @@ list(
 
 
 # Make targets
+
+```{r force-rerun, eval=FALSE}
+#tar_invalidate(names = c(sim_dir_d,sim_files_ts_d,sim_files_no_ts_d,sim_prep_d, sim_ts_mat_d))
+#tar_invalidate(names = c(sim_param_d2))
+```
+
 
 ```{r tar_make}
 ncpu <- future::availableCores()
@@ -658,13 +488,19 @@ source(paste0(dir_fun, "R/sem_helpers.R"))
 
 ```{r, eval = FALSE}
 tar_load(sim_fw)
+map(c("rho", "h", "env_stoch", "S", "Z"), ~unique(sim_fw[[.x]]))
+sim_prep_d %>%
+  mutate(omega_alive = map2(omega, alive_species, ~.x[.y, .y, drop = FALSE]))
+  select(omega)
+sim_prep_d$omega[[1]][sim_prep_d$alive_species[[1]], sim_prep_d$alive_species[[1]]]
+
 sim_fw %>%
   filter(
     rho %in% c(0, .25, .75, 1),
     h %in% c(2, 3),
-    env_stoch %in% c(.1, .3, .6),
-    S %in% c(10, 40, 60),
-    Z %in% c(1, 10, 100)
+    env_stoch %in% c(.1, .2, .3, .6),
+    S %in% c(10, 30, 40),
+    Z %in% c(1, 5, 10, 100)
   )
 ```
 
@@ -673,8 +509,22 @@ tar_load(c(sim_prep_d, sim_param_d2))
 sim_param_missing <- sim_param_d2 %>%
   filter(!sim_id %in% sim_prep_d$sim_id)
 sim_param_missing %>%
+  filter(S == 20)
+sim_param_missing %>%
   select(!where(is.list)) %>%
   summary
+tar_load(sim)
+sim %>%
+  filter(max_tlvl <= 1) %>%
+  select(!where(is.list)) %>%
+  summary()
+sim %>%
+  filter(disconnected_prod) %>% 
+  select(stab_com, everything())
+
+sim %>%
+  filter(!disconnected_prod) %>% 
+  select(stab_com, everything())
 ```
 
 ```{r, eval=FALSE}
@@ -686,6 +536,8 @@ tar_load(sim_prep_d)
 tar_load(sim)
 sim %>%
   filter(!disconnected_prod)
+sim %>%
+  filter(max_tlvl <= 1)
 sim[sim$sim_id == 3, ]$
 
 tar_load(sim_fw)
