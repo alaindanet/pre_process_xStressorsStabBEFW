@@ -30,6 +30,7 @@ Near the top of the document, you may also wish to remove the `_targets_r` direc
 
 ```{r}
 library(targets)
+library(tarchetypes)
 tar_unscript()
 ```
 
@@ -40,7 +41,10 @@ We first define some global options/functions common to all targets. The functio
 ```{targets example-globals, tar_globals = TRUE}
 options(tidyverse.quiet = TRUE)
 tar_config_set(store = "/mnt/parscratch/users/bi1ahd/pre_process_xStressorsStabBEFW_targets/")
-tar_option_set(packages = c("tidyverse", "magrittr", "cowplot", "here", "arrow", "piecewiseSEM", "semEff", "easystats", "glmmTMB", "ggcorrplot", "kableExtra"))
+tar_option_set(
+  packages = c("tarchetypes", "tidyverse", "magrittr", "cowplot", "here", "arrow", "piecewiseSEM", "semEff", "easystats", "glmmTMB", "ggcorrplot", "kableExtra"),
+  error = "null"
+  )
 dir_fun <- "~/xStressorsStabBEFW/"
 source(paste0(dir_fun, "R/network_metrics.R"))
 source(paste0(dir_fun, "R/string_replacements.R"))
@@ -55,7 +59,25 @@ compute_metabolic_loss <- function(Z = NULL, tlvl = NULL, ax = .88, bx = -0.25) 
 }
 source(here::here("R", "data_prep.R"))
 source(here::here("R", "model_helpers.R"))
+
+# Necessary for tar_map()
+sim_to_map <- tibble::tibble(
+    dir_name = c("simCSh_allo_d5/", "simCSh_allo_d5_no_rerun/",
+      "simCSh_non_allo_d5_no_rerun/"),
+    name = c("rerun", "no_rerun", "non_allo_no_rerun"),
+    full_path = paste0("/mnt/parscratch/users/bi1ahd/sim/", dir_name)
+    )
 ```
+
+```{r, eval =FALSE}
+sim_to_map <- tibble::tibble(
+    dir_name = c("simCSh_allo_d5/", "simCSh_allo_d5_no_rerun/",
+      "simCSh_non_allo_d5_no_rerun/"),
+    name = c("rerun", "no_rerun", "non_allo_no_rerun"),
+    full_path = paste0("/mnt/parscratch/users/bi1ahd/sim/", dir_name)
+    )
+```
+
 
 # Targets
 
@@ -311,21 +333,116 @@ targets <- tar_map(
     pattern = map(analysis)
   )
 )
-tar_map(
-  sim_folders = tibble(
-    dir_name = c("simCSh_allo_d5", "simCSh_allo_d5_no_rerun",
-      "simCSh_non_allo_d5_no_rerun"),
-    full_path = paste0("/mnt/parscratch/users/bi1ahd/sim/", dir_name)
-    ) %>%
-  mutate(
-    file_no_ts = map(full_path, ~list.files(.x) %>% .[!str_detect(., "_ts")]),
-    file_ts = map(full_path, ~list.files(.x) %>% .[!str_detect(., "_ts")]),
-  )
-  ),
-tar_target(file_no_ts, list.files(full_path) %>% .[!str_detect(., "_ts")],)
-)
-
 ```
+
+```{targets}
+library(tarchetypes)
+tar_map(
+  values = sim_to_map,
+  names = "name",
+  tar_target(file_no_ts, get_no_ts_file(dir = full_path)),
+  tar_target(file_ts, get_ts_file(dir = full_path)),
+  tar_target(sim_prep,
+    prep_sim_for_analysis(
+      dir = full_path,
+      file = file_no_ts,
+      extinct_bm_threshold = extinction_threshold,
+      param_var = var_param_sim_d,
+      param_table = sim_param_d2
+      ),
+    pattern = file_no_ts
+    ),
+  tar_target(sim_ts_mat,
+    make_ts_vector_to_matrices(
+      dir = full_path,
+      file = file_ts,
+      ntimestep = 500),
+    pattern = file_ts
+  ),
+  tar_target(sim_net, compute_network_metrics(sim = sim_prep)),
+  tar_target(sim_ts_prep,
+    filter_alive_species_ts_matrices(
+      ts_mat = sim_ts_mat,
+      prep_sim = sim_prep
+    ),
+    pattern = map(sim_ts_mat)
+  ),
+  tar_target(sim_stab,
+    compute_stability_metrics_ts(sim_ts_prep = sim_ts_prep),
+     pattern = map(sim_ts_prep)
+  ),
+  tar_target(sim, get_sim_dataset(
+      sim_stab = sim_stab,
+      sim_net = sim_net
+    )),
+  tar_target(sim_fw, filter_sim_fw(x = sim)),
+  tar_target(sim_fw_sem, get_sem_dataset(x = sim_fw)),
+  tar_target(sem_simplified_model_list,
+    get_sem_simplified_model_list(sim_fw_sem = sim_fw_sem)),
+  tar_target(sem_simplified, get_sem(model_list = sem_simplified_model_list) ),
+  tar_target(sem_simplified_coeff, get_sem_coeff(sem = sem_simplified)),
+  tar_target(sem_simplified_eff, 
+    get_sem_tot_effect(
+      sem = sem_simplified,
+      sem_data = sim_fw_sem,
+      bootstrap_nb = 10,
+      nb_cores = min(future::availableCores(), 2),
+      ci_type = "perc"
+    )
+  )
+)
+```
+```{r, eval = FALSE}
+tar_load(c(sim_fw_no_rerun, sim_fw_rerun, sim_non_allo_no_rerun))
+tar_manifest() %>%
+  filter(str_detect(name, "sim_ts_prep_no_rerun"))
+```
+
+
+```{targets sem}
+library(tarchetypes)
+tar_map(
+  values = sim_to_map,
+  names = "name",
+  tar_target(sem_model_list,
+    get_sem_model_list(sim_fw_sem = sim_fw_sem)
+    ),
+  tar_target(sem, get_sem(model_list = sem_model_list)),
+  tar_target(sem_coeff, get_sem_coeff(sem = sem)) #,
+#  tar_target(sem_eff,
+#    get_sem_tot_effect(
+#      sem = sem,
+#      sem_data = sim_fw_sem, 
+#      bootstrap_nb = 10,
+#      nb_cores = future::availableCores(),
+#      ci_type = "perc"
+#    )
+#  )
+)
+```
+
+```{r, eval=FALSE}
+library(tidyverse)
+library(magrittr)
+tar_load(c(sem_norerun, sim_fw_sem_norerun))
+ti <- tar_manifest()
+ti %>%
+  filter(str_detect(name, "sem_")) %>%
+  print(n = 40)
+```
+```{r, eval = FALSE}
+library(semEff)
+tar_load(c(
+    sem_simplified_eff_non_allo_no_rerun,
+    sem_simplified_eff_no_rerun,
+    sem_simplified_eff_rerun
+    ))
+
+summary(sem_simplified_eff_non_allo_no_rerun)
+summary(sem_simplified_eff_no_rerun)
+summary(sem_simplified_eff_rerun)
+```
+
 
 
 ```{targets prep-allo_sim}
@@ -355,16 +472,10 @@ list(
     pattern = sim_files_ts_d
   ),
   tar_target(sim_net_d, compute_network_metrics(sim = sim_prep_d)),
-  tar_target(sim_ts_d_prep,
-    filter_alive_species_ts_matrices(
-      ts_mat = sim_ts_mat_d,
-      prep_sim = sim_prep_d
-    ),
-    pattern = map(sim_ts_mat_d)
- ),
+  tar_target(sim_ts_d_prep, sim_ts_prep_rerun),
  tar_target(sim_stab_d,
-   compute_stability_metrics_ts(sim_ts_prep = sim_ts_d_prep),
-    pattern = map(sim_ts_d_prep)
+   compute_stability_metrics_ts(sim_ts_prep = sim_ts_d_prep)#,
+    #pattern = map(sim_ts_d_prep)
  )
 )
 ```
@@ -388,9 +499,8 @@ list(
   tar_target(sim_for_plot,
    sim_ts_d_prep %>%
      filter(sim_id %in% sim_prep_for_plot$sim_id) %>%
-     left_join(sim_prep_for_plot),
-    pattern = map(sim_ts_d_prep)
-)
+     left_join(sim_prep_for_plot)
+    )
   )
 ```
 
@@ -408,6 +518,8 @@ list(
 
 # SEM
 
+
+
 ```{targets sem-process}
 list(
   tar_target(sim_fw_sem, get_sem_dataset(x = sim_fw)),
@@ -420,15 +532,15 @@ list(
     get_sem_tot_effect(
       sem = sem,
       sem_data = sim_fw_sem, 
-      bootstrap_nb = 100,
-      nb_cores = future::availableCores(),
+      bootstrap_nb = 10,
+      nb_cores = min(future::availableCores(), 4),
       ci_type = "perc"
     )
   )
 )
 ```
 
-```{targets simplified-sem}
+```{targets simplified-sem2}
 list(
   tar_target(sem_simplified_model_list,
     get_sem_simplified_model_list(sim_fw_sem = sim_fw_sem)),
@@ -438,8 +550,8 @@ list(
     get_sem_tot_effect(
       sem = sem_simplified,
       sem_data = sim_fw_sem,
-      bootstrap_nb = 100,
-      nb_cores = future::availableCores(),
+      bootstrap_nb = 10,
+      nb_cores = min(future::availableCores(), 4),
       ci_type = "perc"
     )
   )
