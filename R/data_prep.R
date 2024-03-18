@@ -1,12 +1,10 @@
 prep_sim_for_analysis <- function (
-  dir = NULL,
   file = NULL,
   extinct_bm_threshold = extinction_threshold,
   param_var = var_param_sim_d,
   param_table = sim_param_d2
   ) {
-  open_dataset(paste0(dir, file),
-    format = "arrow") %>%
+  open_dataset(file, format = "arrow") %>%
   collect() %>%
   # Transform back interaction strength into matrices
   mutate(across(where(is.list), as.list)) %>%
@@ -43,11 +41,10 @@ prep_sim_for_analysis <- function (
 } 
 
 make_ts_vector_to_matrices <- function(
-  dir = NULL,
   file = NULL,
   ntimestep = NULL 
   ) {
-  open_dataset(paste0(dir, file), format = "arrow") %>%
+  open_dataset(file, format = "arrow") %>%
     collect() %>%
     # Transform back timeseries strength into matrices
     mutate(across(where(is.list), as.list)) %>%
@@ -202,11 +199,11 @@ get_sem_dataset <- function(
            sae_even, cpe_int, cpe_env), log))
 }
 
-get_ts_file <- function(dir = NULL) {
-  list.files(dir) %>% #
+get_ts_file <- function(dir = NULL, full_names = TRUE) {
+  list.files(dir, full.names = full_names) %>% #
     .[str_detect(., "_ts")]
 }
-get_no_ts_file <- function(dir = NULL) {
-  list.files(dir) %>%
+get_no_ts_file <- function(dir = NULL, full_names = TRUE) {
+  list.files(dir, full.names = full_names) %>%
     .[!str_detect(., "_ts")]
 }
