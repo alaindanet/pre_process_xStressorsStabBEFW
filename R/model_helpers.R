@@ -19,7 +19,7 @@ get_sem_model_list <- function (
 }
 
 get_sem_simplified_model_list <- function (
-  sim_fw_sem = NULL 
+  sim_fw_sem = NULL
   ) {
   list(
     ct_alive = lm(ct_alive ~ ct + S, sim_fw_sem),
@@ -38,6 +38,19 @@ get_sem_simplified_model_list <- function (
   )
 }
 
+get_sem_main_text_model_list <- function (
+  sim_fw_sem = NULL
+  ) {
+    list(
+      pop_stab = lm(pop_stab ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + env_stoch, sim_fw_sem),
+      evenness_sae = lm(evenness_sae ~ richness + avg_int_strength + w_avg_tlvl + ct_alive, sim_fw_sem),
+      sae_total = lm(sae_total ~ richness + evenness_sae, sim_fw_sem),
+      cpe = lm(cpe ~ richness + avg_int_strength + w_avg_tlvl + ct_alive + resp_div, sim_fw_sem),
+      async = lm(async ~ sae_total + cpe, sim_fw_sem),
+      stab_com = lm(stab_com ~ pop_stab + async, sim_fw_sem)
+    )
+}
+
 get_sem <- function(model_list = NULL) {
     ti <- as.psem(model_list)
     update(ti, avg_omnivory %~~% w_avg_tlvl)
@@ -51,8 +64,8 @@ get_sem_coeff <- function(sem = NULL) {
 }
 
 get_sem_tot_effect <- function(
-  sem = NULL, 
-  sem_data = NULL, 
+  sem = NULL,
+  sem_data = NULL,
   bootstrap_nb = 100,
   nb_cores = future::availableCores(),
   ci_type = "perc"
@@ -63,6 +76,6 @@ get_sem_tot_effect <- function(
     seed = 13,
     parallel = "snow",
     data = sem_data,
-    ncpus = nb_cores 
+    ncpus = nb_cores
     )
 }
